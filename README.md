@@ -32,7 +32,7 @@ The rounding residual is added to the last item.
 
 ## Requirements
 
-- Go 1.21+
+- Go 1.25+
 
 ## Build
 
@@ -48,10 +48,11 @@ go build -o bin/parser ./cmd/parser
 go run ./cmd/parser -input "Чеки озон май" -output result.csv
 ```
 
-| Flag      | Description                        | Default      |
-| --------- | ---------------------------------- | ------------ |
-| `-input`  | Directory containing PDF receipts  | *(required)* |
-| `-output` | Path to the output CSV file        | `result.csv` |
+| Flag       | Description                        | Default      |
+| ---------- | ---------------------------------- | ------------ |
+| `-input`   | Directory containing PDF receipts  | *(required)* |
+| `-output`  | Path to the output CSV file        | `result.csv` |
+| `-version` | Print version and exit             |              |
 
 Unreadable or malformed PDFs are logged to stderr and skipped; processing continues.
 
@@ -63,13 +64,61 @@ go test ./...
 go test -v ./...
 ```
 
+## Releases
+
+Pre-built binaries for every tagged release are available on the
+[Releases page](../../releases).
+
+### Download and install
+
+**Linux (x86_64)**
+```bash
+VERSION=v0.1.0
+curl -L "https://github.com/<owner>/ozon-bill-parser/releases/download/${VERSION}/ozon-bill-parser_${VERSION}_linux_amd64.tar.gz" \
+  | tar -xz
+./parser -version
+```
+
+**macOS (Apple Silicon)**
+```bash
+VERSION=v0.1.0
+curl -L "https://github.com/<owner>/ozon-bill-parser/releases/download/${VERSION}/ozon-bill-parser_${VERSION}_darwin_arm64.tar.gz" \
+  | tar -xz
+./parser -version
+```
+
+**Windows (x86_64)**
+
+Download `ozon-bill-parser_<version>_windows_amd64.zip` from the Releases page,
+extract it, and run `parser.exe` from a terminal.
+
+### Verify checksums
+
+```bash
+sha256sum -c checksums.txt
+```
+
+### Creating a release
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The `release` GitHub Actions workflow triggers automatically, builds all three
+targets, and publishes the release with archives and `checksums.txt`.
+Tags containing `-rc`, `-beta`, or `-alpha` are published as pre-releases.
+
 ## Project structure
 
 ```
 ozon-bill-parser/
-├── cmd/parser/main.go          # CLI entry point
+├── .github/workflows/
+│   ├── ci.yml              # lint, vet, test on push/PR
+│   └── release.yml         # cross-compile and publish on v* tag
+├── cmd/parser/main.go      # CLI entry point
 ├── internal/parser/
-│   ├── parser.go               # PDF extraction, receipt parsing, CSV writing
-│   └── parser_test.go          # unit tests
-└── plans/ozon-bill-parser.md   # architecture plan
+│   ├── parser.go           # PDF extraction, receipt parsing, CSV writing
+│   └── parser_test.go      # unit tests
+└── plans/                  # architecture plans
 ```

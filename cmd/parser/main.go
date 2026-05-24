@@ -11,10 +11,19 @@ import (
 	"ozon-bill-parser/internal/parser"
 )
 
+// version is set at build time via -ldflags "-X main.version=<tag>".
+var version = "dev"
+
 func main() {
 	inputDir := flag.String("input", "", "Directory containing Ozon PDF receipts (required)")
 	outputFile := flag.String("output", "result.csv", "Path to the output CSV file")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 
 	if *inputDir == "" {
 		fmt.Fprintln(os.Stderr, "error: -input flag is required")
