@@ -31,6 +31,25 @@ func isServiceItem(name string) bool {
 	return false
 }
 
+// ReceiptType represents the payment type of a receipt.
+type ReceiptType int
+
+const (
+	ReceiptTypeUnknown          ReceiptType = iota
+	ReceiptTypeFullPayment                  // Полный расчет
+	ReceiptTypePrepayment                   // Предварительная оплата
+	ReceiptTypePrepaymentOffset             // Зачет предварительной оплаты — duplicate, must be skipped
+)
+
+// OperationType indicates the financial direction of a receipt.
+type OperationType string
+
+const (
+	OperationExpense OperationType = "расход"   // Приход — money spent
+	OperationIncome  OperationType = "доход"    // Возврат прихода — money returned
+	OperationCheck   OperationType = "проверка" // Partial prepayment offset — needs manual review
+)
+
 var (
 	// dateRe matches "DD.MM.YYYY HH:MM" anywhere in a line.
 	dateRe = regexp.MustCompile(`\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}`)
@@ -59,15 +78,29 @@ type RawItem struct {
 
 // Receipt is the result of parsing a single PDF receipt.
 type Receipt struct {
-	DateTime time.Time
-	Items    []RawItem
+	DateTime  time.Time
+	Items     []RawItem
+	Type      ReceiptType
+	Operation OperationType
+	// HasPrepaymentOffset is true when the receipt footer contains
+	// "Зачет предварительной оплаты".
+	HasPrepaymentOffset bool
+	// TotalAmount is the grand total from the "ИТОГ" footer line (≡NNN,NN).
+	TotalAmount float64
+	// PrepaymentOffsetAmount is the amount on the "Зачет предварительной оплаты"
+	// footer line. When it equals TotalAmount the receipt is a pure duplicate of
+	// the corresponding Prepayment receipt and must be skipped.
+	// When it is less than TotalAmount the receipt has a partial offset and is
+	// flagged with OperationCheck for manual review.
+	PrepaymentOffsetAmount float64
 }
 
 // Row is a final output row ready for CSV serialisation.
 type Row struct {
-	DateTime time.Time
-	Name     string
-	Price    float64
+	DateTime  time.Time
+	Name      string
+	Price     float64
+	Operation OperationType
 }
 
 // ExtractText reads a PDF file and returns its plain-text content.
@@ -107,13 +140,136 @@ func ParseReceipt(text string) (Receipt, error) {
 		return Receipt{}, fmt.Errorf("parse items: %w", err)
 	}
 
-	return Receipt{DateTime: dt, Items: items}, nil
+	rt, hasPrepOffset := detectReceiptType(lines)
+	totalAmt, offsetAmt := detectTotals(lines)
+
+	// Determine operation type.
+	op := detectOperation(lines)
+	if hasPrepOffset && rt != ReceiptTypePrepaymentOffset {
+		if offsetAmt > 0 && roundCents(offsetAmt) == roundCents(totalAmt) {
+			// Full prepayment offset: this receipt duplicates the Prepayment receipt.
+			// Mark it so the caller can skip it.
+			op = OperationExpense // will be skipped; value doesn't matter
+		} else {
+			// Partial prepayment offset: needs manual review.
+			op = OperationCheck
+		}
+	}
+
+	return Receipt{
+		DateTime:               dt,
+		Items:                  items,
+		Type:                   rt,
+		Operation:              op,
+		HasPrepaymentOffset:    hasPrepOffset,
+		TotalAmount:            totalAmt,
+		PrepaymentOffsetAmount: offsetAmt,
+	}, nil
+}
+
+// detectReceiptType scans lines after "ИТОГ" to determine the payment type and
+// whether the receipt contains a prepayment-offset line.
+//
+// A receipt can be FullPayment AND contain "Зачет предварительной оплаты" — this
+// means it is the final settlement of a prior Prepayment receipt. In that case
+// hasPrepOffset is true and the paired Prepayment receipt must be skipped.
+//
+// A receipt whose ONLY payment method is "Зачет предварительной оплаты" (no
+// "Полный расчет" / "Предварительная оплата" line) is typed PrepaymentOffset and
+// is itself a duplicate that must be skipped.
+func detectReceiptType(lines []string) (rt ReceiptType, hasPrepOffset bool) {
+	afterTotal := false
+	for _, l := range lines {
+		if l == "ИТОГ" {
+			afterTotal = true
+			continue
+		}
+		if !afterTotal {
+			continue
+		}
+		switch l {
+		case "Полный расчет":
+			rt = ReceiptTypeFullPayment
+		case "Предварительная оплата":
+			if rt == ReceiptTypeUnknown {
+				rt = ReceiptTypePrepayment
+			}
+		case "Зачет предварительной оплаты":
+			hasPrepOffset = true
+			if rt == ReceiptTypeUnknown {
+				rt = ReceiptTypePrepaymentOffset
+			}
+		}
+	}
+	return rt, hasPrepOffset
+}
+
+// detectOperation returns OperationExpense for "Приход" receipts and
+// OperationIncome for "Возврат прихода" (return/refund) receipts.
+func detectOperation(lines []string) OperationType {
+	for _, l := range lines {
+		switch l {
+		case "Приход":
+			return OperationExpense
+		case "Возврат прихода":
+			return OperationIncome
+		}
+	}
+	return OperationExpense
+}
+
+// detectTotals scans the footer (after "ИТОГ") and returns:
+//   - totalAmount: the first ≡NNN,NN value immediately after "ИТОГ"
+//   - offsetAmount: the ≡NNN,NN value on the line immediately after
+//     "Зачет предварительной оплаты"
+func detectTotals(lines []string) (totalAmount, offsetAmount float64) {
+	afterTotal := false
+	expectTotalPrice := false
+	expectOffsetPrice := false
+
+	for _, l := range lines {
+		if l == "ИТОГ" {
+			afterTotal = true
+			expectTotalPrice = true
+			continue
+		}
+		if !afterTotal {
+			continue
+		}
+
+		if expectTotalPrice {
+			if pm := priceLineRe.FindStringSubmatch(l); pm != nil {
+				if v, err := parsePrice(pm[1]); err == nil {
+					totalAmount = v
+				}
+				expectTotalPrice = false
+				continue
+			}
+			// Non-price line after ИТОГ — stop looking for total price.
+			expectTotalPrice = false
+		}
+
+		if l == "Зачет предварительной оплаты" {
+			expectOffsetPrice = true
+			continue
+		}
+
+		if expectOffsetPrice {
+			if pm := priceLineRe.FindStringSubmatch(l); pm != nil {
+				if v, err := parsePrice(pm[1]); err == nil {
+					offsetAmount = v
+				}
+			}
+			expectOffsetPrice = false
+		}
+	}
+	return totalAmount, offsetAmount
 }
 
 // DistributeDelivery redistributes service-item costs proportionally across
 // regular goods. The rounding residual is added to the last regular item.
 // If there are no regular items, service items are returned as-is.
-func DistributeDelivery(items []RawItem) []Row {
+func DistributeDelivery(items []RawItem, op OperationType) []Row {
 	var regular, service []RawItem
 	for _, it := range items {
 		if it.Service {
@@ -125,12 +281,12 @@ func DistributeDelivery(items []RawItem) []Row {
 
 	// No service charges — return regular items unchanged.
 	if len(service) == 0 {
-		return toRows(regular, nil)
+		return toRows(regular, nil, op)
 	}
 
 	// No regular items — return service items as-is (edge case).
 	if len(regular) == 0 {
-		return toRows(service, nil)
+		return toRows(service, nil, op)
 	}
 
 	var deliveryTotal float64
@@ -155,10 +311,11 @@ func DistributeDelivery(items []RawItem) []Row {
 	residual := roundCents(deliveryTotal - distributed)
 	addons[len(addons)-1] += residual
 
-	return toRows(regular, addons)
+	return toRows(regular, addons, op)
 }
 
 // WriteCSV writes rows to a semicolon-delimited UTF-8 CSV file with BOM.
+// Columns: datetime, name, price, operation.
 func WriteCSV(rows []Row, outPath string) error {
 	f, err := os.Create(outPath)
 	if err != nil {
@@ -174,7 +331,7 @@ func WriteCSV(rows []Row, outPath string) error {
 	w := csv.NewWriter(f)
 	w.Comma = ';'
 
-	if err := w.Write([]string{"datetime", "name", "price"}); err != nil {
+	if err := w.Write([]string{"datetime", "name", "price", "operation"}); err != nil {
 		return fmt.Errorf("write header: %w", err)
 	}
 
@@ -183,6 +340,7 @@ func WriteCSV(rows []Row, outPath string) error {
 			r.DateTime.Format("2006-01-02T15:04:05"),
 			r.Name,
 			strconv.FormatFloat(r.Price, 'f', 2, 64),
+			string(r.Operation),
 		}
 		if err := w.Write(record); err != nil {
 			return fmt.Errorf("write row: %w", err)
@@ -328,7 +486,7 @@ func roundCents(v float64) float64 {
 }
 
 // toRows converts RawItems to Rows, optionally adding per-item delivery addons.
-func toRows(items []RawItem, addons []float64) []Row {
+func toRows(items []RawItem, addons []float64, op OperationType) []Row {
 	rows := make([]Row, len(items))
 	for i, it := range items {
 		addon := 0.0
@@ -336,8 +494,9 @@ func toRows(items []RawItem, addons []float64) []Row {
 			addon = addons[i]
 		}
 		rows[i] = Row{
-			Name:  it.Name,
-			Price: roundCents(it.Price + addon),
+			Name:      it.Name,
+			Price:     roundCents(it.Price + addon),
+			Operation: op,
 		}
 	}
 	return rows

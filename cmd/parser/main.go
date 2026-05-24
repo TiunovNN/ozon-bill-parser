@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -64,6 +65,7 @@ func main() {
 }
 
 // processFile extracts text from a PDF, parses the receipt, and returns final rows.
+// Returns nil rows (no error) for receipts that must be skipped to avoid duplicates.
 func processFile(path string) ([]parser.Row, error) {
 	text, err := parser.ExtractText(path)
 	if err != nil {
@@ -75,12 +77,28 @@ func processFile(path string) ([]parser.Row, error) {
 		return nil, fmt.Errorf("parse receipt: %w", err)
 	}
 
-	rows := parser.DistributeDelivery(receipt.Items)
+	// Pure prepayment-offset receipts duplicate goods already in a Prepayment receipt.
+	if receipt.Type == parser.ReceiptTypePrepaymentOffset {
+		fmt.Fprintf(os.Stderr, "info: skip prepayment-offset receipt %q\n", path)
+		return nil, nil
+	}
 
-	// Attach the receipt date/time to every row.
+	// A receipt whose "Зачет предварительной оплаты" amount fully covers the total
+	// is a settlement document — the goods are already recorded in the corresponding
+	// Prepayment receipt, so this one is a duplicate.
+	if receipt.HasPrepaymentOffset && roundCents(receipt.PrepaymentOffsetAmount) == roundCents(receipt.TotalAmount) {
+		fmt.Fprintf(os.Stderr, "info: skip full-prepayment-offset receipt (duplicate of prepayment) %q\n", path)
+		return nil, nil
+	}
+
+	rows := parser.DistributeDelivery(receipt.Items, receipt.Operation)
 	for i := range rows {
 		rows[i].DateTime = receipt.DateTime
 	}
-
 	return rows, nil
+}
+
+// roundCents rounds a float64 to 2 decimal places.
+func roundCents(v float64) float64 {
+	return math.Round(v*100) / 100
 }
