@@ -5,20 +5,41 @@ CLI utility that parses Ozon PDF receipts and produces a single CSV file with on
 ## Output format
 
 ```
-datetime;name;price
-2026-05-01T19:01:00;Комод с ящиками для одежды ГУД ЛАКК Сага, 92х51х100 см, белый;12977.00
-2026-05-23T17:30:00;Парафиновая смазка для цепи велосипеда MAX WAX Chain Wax 30мл;225.00
+datetime;name;price;operation
+2026-05-01T19:01:00;Комод с ящиками для одежды ГУД ЛАКК Сага, 92х51х100 см, белый;12977.00;расход
+2026-05-23T17:30:00;Парафиновая смазка для цепи велосипеда MAX WAX Chain Wax 30мл;225.00;расход
+2026-05-10T12:00:00;Наушники беспроводные;1490.00;доход
 ```
 
-| Field      | Format                  | Notes                                      |
-| ---------- | ----------------------- | ------------------------------------------ |
-| `datetime` | `2006-01-02T15:04:05`   | Naive (no timezone), as printed on receipt |
-| `name`     | UTF-8 string            | Full item name, multi-line names joined    |
-| `price`    | Decimal with `.` separator | Delivery cost distributed proportionally |
+| Field       | Format                     | Notes                                                      |
+| ----------- | -------------------------- | ---------------------------------------------------------- |
+| `datetime`  | `2006-01-02T15:04:05`      | Naive (no timezone), as printed on receipt                 |
+| `name`      | UTF-8 string               | Full item name, multi-line names joined                    |
+| `price`     | Decimal with `.` separator | Delivery cost distributed proportionally                   |
+| `operation` | `расход` / `доход` / `проверка` | Payment direction; see [Operation types](#operation-types) |
 
 - Delimiter: `;`
 - Encoding: UTF-8 with BOM (compatible with Microsoft Excel)
 - Rows sorted by `datetime` ascending
+
+## Operation types
+
+| Value       | Meaning                                                                                   |
+| ----------- | ----------------------------------------------------------------------------------------- |
+| `расход`    | Regular purchase (`Приход` receipt) — money spent                                        |
+| `доход`     | Refund (`Возврат прихода` receipt) — money returned                                      |
+| `проверка`  | Partial prepayment offset — total is only partially covered by a prior prepayment; **requires manual review** |
+
+## Receipt deduplication
+
+Ozon sometimes issues multiple receipts for a single order when a prepayment is involved. The parser automatically skips duplicate receipts to avoid double-counting:
+
+| Receipt type                    | Action  | Reason                                                                 |
+| ------------------------------- | ------- | ---------------------------------------------------------------------- |
+| `Зачет предварительной оплаты` only | **skipped** | Pure offset receipt — goods are already recorded in the Prepayment receipt |
+| `Полный расчет` + full offset amount == total | **skipped** | Settlement document — goods are already recorded in the Prepayment receipt |
+| `Предварительная оплата`        | emitted | Prepayment receipt — goods recorded here                               |
+| `Полный расчет` with partial offset | emitted as `проверка` | Partial prepayment — needs manual review                  |
 
 ## Delivery cost distribution
 
