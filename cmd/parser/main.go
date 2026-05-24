@@ -17,7 +17,7 @@ var version = "dev"
 
 func main() {
 	inputDir := flag.String("input", "", "Directory containing Ozon PDF receipts (required)")
-	outputFile := flag.String("output", "result.csv", "Path to the output CSV file")
+	outputFile := flag.String("output", "", "Path to the output CSV file (default: result.csv next to input dir)")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
@@ -26,10 +26,26 @@ func main() {
 		return
 	}
 
+	// Support drag-and-drop: when the binary receives a directory as a positional
+	// argument (no flags), treat it as the input directory and place result.csv
+	// next to it so the user finds the output in the same location.
+	if *inputDir == "" && flag.NArg() == 1 {
+		*inputDir = flag.Arg(0)
+	}
+
 	if *inputDir == "" {
 		fmt.Fprintln(os.Stderr, "error: -input flag is required")
 		flag.Usage()
 		os.Exit(1)
+	}
+
+	// Resolve the default output path: result.csv placed next to the input directory.
+	if *outputFile == "" {
+		absInput, err := filepath.Abs(*inputDir)
+		if err != nil {
+			log.Fatalf("resolve input path: %v", err)
+		}
+		*outputFile = filepath.Join(filepath.Dir(absInput), "result.csv")
 	}
 
 	pattern := filepath.Join(*inputDir, "*.pdf")

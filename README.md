@@ -63,17 +63,42 @@ go build -o bin/parser ./cmd/parser
 
 ## Run
 
+### Drag and drop (no terminal needed)
+
+Drag the folder containing your PDF receipts and drop it onto the `parser` binary
+(or `parser.exe` on Windows). The program will:
+
+1. Read all `*.pdf` files inside the dropped folder.
+2. Write `result.csv` **next to** the dropped folder (in its parent directory).
+
+```
+Before:
+  ~/Downloads/
+  └── Чеки озон май/
+      ├── cheque_001.pdf
+      └── cheque_002.pdf
+
+After drop:
+  ~/Downloads/
+  ├── Чеки озон май/
+  │   ├── cheque_001.pdf
+  │   └── cheque_002.pdf
+  └── result.csv          ← generated here
+```
+
+### Command line
+
 ```bash
 ./bin/parser -input "Чеки озон май" -output result.csv
 # or without building:
 go run ./cmd/parser -input "Чеки озон май" -output result.csv
 ```
 
-| Flag       | Description                        | Default      |
-| ---------- | ---------------------------------- | ------------ |
-| `-input`   | Directory containing PDF receipts  | *(required)* |
-| `-output`  | Path to the output CSV file        | `result.csv` |
-| `-version` | Print version and exit             |              |
+| Flag       | Description                                                    | Default                              |
+| ---------- | -------------------------------------------------------------- | ------------------------------------ |
+| `-input`   | Directory containing PDF receipts                              | *(required, or drag-and-drop)*       |
+| `-output`  | Path to the output CSV file                                    | `result.csv` next to the input dir   |
+| `-version` | Print version and exit                                         |                                      |
 
 Unreadable or malformed PDFs are logged to stderr and skipped; processing continues.
 
